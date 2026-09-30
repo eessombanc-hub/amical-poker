@@ -1,0 +1,207 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Cinzel:wght@500;600;700&family=Dancing+Script:wght@500;600;700&family=Playfair+Display:ital,wght@0,600;0,700;0,800;1,600&family=PT+Serif:wght@400;700&family=Metamorphous&family=MedievalSharp&display=swap');
+
+/* ── Fond de site : dégradé vert brillant / rouge / noir sur toutes les
+   pages (voir .panel ci-dessous pour la lisibilité du contenu) ──────── */
+body {
+  font-family: 'Inter', sans-serif;
+  color: #eafdf3;
+  background:
+    radial-gradient(ellipse 900px 600px at 12% -5%, rgba(10,222,124,0.30) 0%, transparent 55%),
+    radial-gradient(ellipse 900px 700px at 90% 105%, rgba(255,31,61,0.28) 0%, transparent 55%),
+    linear-gradient(150deg, #04140c 0%, #063d27 22%, #050505 48%, #2a0008 72%, #ff1f3d 88%, #050505 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+h1, h2, h3 {
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+}
+
+/* Nom du club — "Arcane Fable" (HipFonts) est une police à licence
+   commerciale payante (MyFonts / Creative Fabrica / Creative Market), non
+   disponible en usage libre. MedievalSharp reprend ce même esprit médiéval
+   gothique et fantaisiste (tracé manuscrit à l'ancienne, très utilisé pour
+   les univers fantasy/jeux de rôle), en police Google Fonts libre. */
+.font-royal {
+  font-family: 'MedievalSharp', 'Metamorphous', 'Cinzel', serif;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+}
+
+/* Titre du club en grand, sur la page d'accueil uniquement : on veut ici de
+   la prestance plutôt que l'esprit fantasy des onglets/logo — Cinzel est
+   dessinée d'après les capitales romaines gravées (colonne Trajane), une
+   référence classique du "monumental" et du luxe, en gras et bien espacée. */
+.font-titre-club {
+  font-family: 'Cinzel', serif;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* Petit sigle "APCV" à côté du nom du club — la police exacte du journal
+   Le Monde ("Le Monde Journal", dessinée par Jean François Porchez) est une
+   police propriétaire réservée au titre, sans licence libre disponible ; PT
+   Serif reprend cet esprit de sérif de presse française, sobre et solide. */
+.font-journal {
+  font-family: 'PT Serif', serif;
+  font-weight: 700;
+}
+
+/* Police des onglets de navigation — Playfair Display, dessinée d'après les
+   caractères à fort contraste de John Baskerville et de la famille Didot au
+   XVIIIe siècle (Siècle des Lumières), mais avec des empattements plus
+   marqués et plus de caractère à l'affichage : plus accrocheuse qu'une
+   Baskerville classique tout en gardant cette même filiation historique. */
+.font-lumieres {
+  font-family: 'Playfair Display', serif;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+/* Texture d'écriture manuscrite pour la signature/devise du club (accueil) */
+.font-signature {
+  font-family: 'Dancing Script', cursive;
+}
+
+/* Panneau clair qui porte le contenu de chaque page au-dessus du dégradé */
+.panel {
+  background: theme('colors.paper');
+  color: theme('colors.ink');
+  border-radius: 1.5rem;
+  padding: 2.25rem 1.5rem;
+  box-shadow: 0 30px 70px -25px rgba(0,0,0,0.65), 0 0 0 1px rgba(255,255,255,0.06);
+}
+@media (min-width: 768px) {
+  .panel { padding: 3rem 3.5rem; }
+}
+
+/* Titre "royal" brillant (accueil) : dégradé or qui se déplace en continu */
+.text-royal-shine {
+  background: linear-gradient(100deg, #ffd666 0%, #fff8e1 15%, #f0b429 30%, #ffd666 45%, #fff8e1 60%, #f0b429 75%, #ffd666 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Variante de .text-royal-shine pour fond CLAIR (Espace membre) : le
+   dégradé ci-dessus part de tons quasi blancs, invisibles sur fond pâle.
+   Mêmes teintes or que le reste du site, simplement plus soutenues.
+   S'anime avec la même classe .animate-royal-shine (l'animation ne fait
+   que déplacer le fond, indépendamment de son dégradé). */
+.text-gold-deep {
+  background: linear-gradient(100deg, #b8912f 0%, #f0b429 20%, #8a6412 40%, #f0b429 60%, #b8912f 80%, #f0b429 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.font-mono-club {
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Entrée du popup d'anniversaire (accueil) : léger zoom + fondu. */
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.92) translateY(12px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.animate-modal-in {
+  animation: modal-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Feu d'artifice CSS du popup d'anniversaire (voir components/BirthdayPopup.tsx) :
+   chaque particule part du point d'éclatement vers une position (--dx, --dy)
+   fixée en style inline, en grossissant légèrement puis en s'effaçant. */
+@keyframes firework-particle {
+  0%   { transform: translate(0, 0) scale(0.4); opacity: 0; }
+  12%  { transform: translate(calc(var(--dx) * 0.15), calc(var(--dy) * 0.15)) scale(1.15); opacity: 1; }
+  100% { transform: translate(var(--dx), var(--dy)) scale(0.2); opacity: 0; }
+}
+.animate-firework-particle {
+  animation-name: firework-particle;
+  animation-timing-function: cubic-bezier(0.18, 0.7, 0.4, 1);
+  animation-iteration-count: infinite;
+}
+
+/* Petit rebond festif de l'emoji dans l'en-tête « Joyeux anniversaire ». */
+@keyframes birthday-emoji-bounce {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  25%      { transform: translateY(-3px) rotate(-10deg); }
+  50%      { transform: translateY(0) rotate(0deg); }
+  75%      { transform: translateY(-3px) rotate(10deg); }
+}
+.animate-birthday-emoji-bounce {
+  display: inline-block;
+  animation: birthday-emoji-bounce 1.6s ease-in-out infinite;
+}
+
+/* Halo doré pulsant autour de l'avatar du membre fêté. */
+@keyframes birthday-avatar-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(240, 180, 41, 0.55), 0 0 22px 4px rgba(240, 180, 41, 0.35); }
+  50%      { box-shadow: 0 0 0 6px rgba(240, 180, 41, 0), 0 0 30px 8px rgba(240, 180, 41, 0.55); }
+}
+.animate-birthday-avatar-glow {
+  animation: birthday-avatar-glow 2.4s ease-in-out infinite;
+}
+
+/* ── Logo dynamique ────────────────────────────── */
+@keyframes suit-cycle {
+  0%, 20%   { content: "♠"; }
+  25%, 45%  { content: "♥"; }
+  50%, 70%  { content: "♦"; }
+  75%, 95%  { content: "♣"; }
+  100%      { content: "♠"; }
+}
+
+.logo-shimmer {
+  background: linear-gradient(
+    110deg,
+    theme('colors.forest') 20%,
+    #6ee7b7 40%,
+    theme('colors.forest') 60%
+  );
+  background-size: 200% 100%;
+}
+
+/* ── Effets visuels réutilisables (ergonomie / flash) ──────────── */
+
+::selection {
+  background: theme('colors.forest');
+  color: white;
+}
+
+/* Cartes (actus, manches, résultats...) : légère élévation + halo au survol */
+.card-hover {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 28px -12px rgba(10, 222, 124, 0.35);
+  border-color: rgba(10, 222, 124, 0.45) !important;
+}
+
+/* Boutons/CTA principaux : halo pulsé + léger zoom au survol */
+.btn-glow {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  box-shadow: 0 4px 18px -4px rgba(10, 222, 124, 0.55);
+}
+.btn-glow:hover {
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 10px 26px -6px rgba(10, 222, 124, 0.65);
+  filter: brightness(1.05);
+}
+.btn-glow:active {
+  transform: translateY(0) scale(0.98);
+}
+
+/* Dégradé animé pour les fonds de section "flash" */
+.gradient-flash {
+  background: linear-gradient(120deg, #063d27 0%, #0ade7c 45%, #063d27 100%);
+  background-size: 200% 200%;
+}

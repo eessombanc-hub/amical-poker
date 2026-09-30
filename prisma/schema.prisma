@@ -1,0 +1,930 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── AUTH & MEMBRES ──────────────────────────────
+
+// INVITE : accès invité, pour une personne qui n'est pas membre du club mais
+// autorisée à participer au forum (ex. futur membre en réflexion, ami d'un
+// membre). Un compte INVITE n'a jamais de fiche Member associée — pas de
+// classement, pas d'inscription aux manches, pas d'affichage dans les pages
+// membres — seul l'accès au forum lui est ouvert. Niveau le plus bas de la
+// hiérarchie, en dessous de MEMBRE.
+enum Role {
+  INVITE
+  MEMBRE
+  RESPONSABLE
+  BUREAU
+  ADMIN
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String
+  role          Role      @default(MEMBRE)
+  // Nom affiché pour un compte sans fiche Member (rôle INVITE) — ex. dans le
+  // forum. Ignoré dès qu'une fiche Member existe (son pseudo prévaut).
+  displayName   String?
+  createdAt     DateTime  @default(now())
+  // Horodatage de la dernière connexion réussie (mis à jour à chaque
+  // authentification valide — voir lib/auth.ts, authorize). Sert au
+  // compteur "connectés dans les dernières 24h" affiché sur l'accueil,
+  // séparément pour les membres et les accès invité (role INVITE) — voir
+  // app/page.tsx, getRecentLogins.
+  lastLoginAt   DateTime?
+
+  // Suspension du forum ouvert à tous ("forum commun"), décidée par un
+  // membre du bureau (rôle BUREAU) — voir /api/forum/mute/[userId].
+  // forumMutedPermanent=true → suspension définitive (forumMutedUntil ignoré).
+  // Sinon, forumMutedUntil fixe la date de fin d'une suspension temporaire ;
+  // null dans les deux champs = pas de suspension en cours.
+  forumMutedUntil      DateTime?
+  forumMutedPermanent  Boolean   @default(false)
+
+  // "Vu le" par rubrique, pour le point de nouveauté affiché dans l'espace
+  // membre à côté de Forum du club, Gazette Poker, Forum du bureau, Galerie
+  // et Stratégie (voir app/espace-membre/page.tsx) : mis à jour à chaque
+  // visite de la rubrique correspondante (voir
+  // app/api/member/mark-seen/route.ts, components/MarkSectionSeen.tsx) et
+  // comparé à la date du contenu le plus récent de la rubrique pour savoir
+  // s'il y a du nouveau non consulté.
+  lastSeenForumAt        DateTime?
+  lastSeenPokerNewsAt    DateTime?
+  lastSeenForumBureauAt  DateTime?
+  lastSeenGalerieAt      DateTime?
+  lastSeenStrategieAt    DateTime?
+
+  member        Member?
+  auditLogs     AuditLog[]
+  forumTopics   ForumTopic[]
+  forumReplies  ForumReply[]
+  passwordResetTokens PasswordResetToken[]
+  photoComments PhotoComment[]
+  videoComments VideoComment[]
+}
+
+// Jetons de réinitialisation de mot de passe ("mot de passe oublié").
+// Seul le hash SHA-256 du jeton est stocké — le jeton en clair n'existe
+// que dans l'e-mail envoyé au membre et dans l'URL qu'il ouvre.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+enum MembershipStatus {
+  ACTIF
+  EN_ATTENTE
+  INACTIF
+}
+
+// Suivi de la cotisation annuelle d'un membre — modifiable uniquement par
+// les admins (voir /admin/membres, MembersAdminPanel) via un code couleur :
+// vert (payée), orange (partielle), rouge (non payée). Affiché au membre
+// concerné à côté de son pseudo sur la page d'accueil (voir app/page.tsx).
+enum CotisationStatus {
+  NON_PAYEE
+  PARTIELLE
+  PAYEE
+}
+
+// Demande d'adhésion publique (formulaire "Devenir membre") : un visiteur y
+// choisit son pseudo, son e-mail et son mot de passe, mais aucun compte
+// (User/Member) n'est créé tant qu'un admin ou responsable n'a pas validé
+// la demande depuis /admin/demandes-adhesion.
+enum MembershipRequestStatus {
+  EN_ATTENTE
+  VALIDEE
+  REJETEE
+}
+
+// ADHESION : demande classique de "Devenir membre" (formulaire /demande-adhesion) —
+// validée, crée un compte User + une fiche Member.
+// INVITE_FORUM : demande d'accès invité (formulaire /demande-invite, personnes
+// hors club qui veulent juste suivre le forum) — validée, crée seulement un
+// compte User de rôle INVITE, sans fiche Member.
+enum MembershipRequestType {
+  ADHESION
+  INVITE_FORUM
+}
+
+model MembershipRequest {
+  id            String                  @id @default(cuid())
+  type          MembershipRequestType   @default(ADHESION)
+  firstName     String?                 // Demandé pour une adhésion complète — toujours nul pour une demande d'accès invité.
+  lastName      String?                 // Idem. Nullable aussi pour les demandes envoyées avant l'ajout de ces champs.
+  nickname      String                  // Pseudo (ADHESION) ou nom affiché (INVITE_FORUM).
+  email         String
+  passwordHash  String
+  birthDate     DateTime?               // Demandée pour une adhésion complète (validée côté API, 18 ans minimum) — toujours nulle pour une demande d'accès invité.
+  status        MembershipRequestStatus @default(EN_ATTENTE)
+  createdAt     DateTime                @default(now())
+  processedAt   DateTime?
+  processedById String?
+  rejectReason  String?
+}
+
+model Member {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id])
+  firstName         String
+  lastName          String
+  nickname          String   @unique
+  photoUrl          String?
+  birthDate         DateTime? // Nullable : absente pour les membres créés avant l'ajout de ce champ.
+  joinDate          DateTime @default(now())
+  membershipStatus  MembershipStatus @default(EN_ATTENTE)
+  publicResults     Boolean  @default(false) // RGPD : résultats publics seulement si autorisé
+
+  // Cotisation annuelle — voir enum CotisationStatus ci-dessus. Non payée
+  // par défaut, à mettre à jour manuellement par un admin.
+  cotisationStatus  CotisationStatus @default(NON_PAYEE)
+
+  // Place au classement général du site historique (Jimdo), rapprochée par
+  // nom et tenue à jour automatiquement à chaque synchronisation — voir
+  // lib/jimdoSync.ts, syncClassement. Null si la fiche n'a pas pu être
+  // rapprochée d'une ligne du tableau (nom absent ou ambigu).
+  legacyRankingPlace      Int?
+  legacyRankingUpdatedAt  DateTime?
+
+  // Fait partie de l'Équipe CFEPA, affichée dans un onglet dédié de "Vie du
+  // club" (voir app/vie-du-club, section #equipe-cfepa) — géré par les
+  // responsables/bureau/admin depuis cette même page (voir
+  // components/CfepaTeamPanel.tsx et app/api/admin/cfepa-team). Ne
+  // conditionne aucun droit ni aucune inscription : purement une vitrine.
+  cfepaTeam         Boolean  @default(false)
+
+  boardRole         BoardMember?
+  registrations     RoundRegistration[]
+  results           Result[]
+  rankings          Ranking[]
+  sitngoRankings    SitngoRanking[]
+  operationLogs     RoundOperationLog[]
+  portraits         Portrait[]
+  bustsAsBusted     RoundBust[] @relation("BustedMember")
+  bustsAsKiller     RoundBust[] @relation("KillerMember")
+  contentRequests   ContentRequest[]
+  cfepaRoundRoles   CfepaRoundRole[]
+}
+
+model BoardMember {
+  id         String   @id @default(cuid())
+  memberId   String   @unique
+  member     Member   @relation(fields: [memberId], references: [id])
+  function   String   // Président, Trésorier, Secrétaire, Responsable tournoi...
+  order      Int      @default(0)
+  seasonId   String
+  season     Season   @relation(fields: [seasonId], references: [id])
+}
+
+// ── SAISONS & MANCHES ───────────────────────────
+
+model Season {
+  id            String   @id @default(cuid())
+  label         String   @unique // "2026/2027"
+  startDate     DateTime
+  endDate       DateTime
+  isActive      Boolean  @default(false)
+
+  rounds        Round[]
+  rankingConfig RankingConfig?
+  rankings      Ranking[]
+  sitngoRankings SitngoRanking[]
+  boardMembers  BoardMember[]
+}
+
+enum RoundStatus {
+  A_VENIR
+  INSCRIPTIONS_OUVERTES
+  COMPLET
+  EN_COURS
+  TERMINEE
+  ANNULEE
+}
+
+// SITNGO : manche Sit&Go jouée en marge d'un Day 2 de Deepstack (voir
+// Round.linkedDeepstackRoundId ci-dessous) — réservée aux joueurs qui ne
+// participent pas, ou plus, à ce Deepstack. Classement toujours séparé du
+// classement général (voir SitngoRanking, lib/ranking.ts).
+enum RoundFormat {
+  MTT
+  DEEPSTACK
+  CFEPA
+  SITNGO
+}
+
+model Round {
+  id                    String       @id @default(cuid())
+  seasonId              String
+  season                Season       @relation(fields: [seasonId], references: [id])
+  number                Int
+  date                  DateTime
+  openTime              String       // "20h15"
+  startTime             String       // "20h45"
+  location              String
+  format                RoundFormat
+  maxSeats              Int
+  status                RoundStatus  @default(A_VENIR)
+  openManagerId         String?
+  closeManagerId        String?
+  tournamentDirectorId  String?
+  rules                 String?
+
+  // Rappel automatique par e-mail envoyé à tous les membres actifs 2 jours
+  // avant la manche (voir lib/roundReminder.ts, app/api/cron/round-reminder)
+  // — horodatage de l'envoi, pour ne jamais le renvoyer deux fois si le
+  // cron se déclenche plusieurs fois le même jour. Null tant qu'aucun
+  // rappel n'a encore été envoyé pour cette manche.
+  reminderSentAt        DateTime?
+
+  // Vrai nom de la manche, affiché au public (calendrier, page de
+  // classement dédiée) à la place du numéro interne "Manche N" — ex.
+  // "MTT 3", "Deepstack 2 — Day 1", "CFEPA 1". Le numéro (`number`)
+  // continue de régir l'ordre chronologique et les liens internes
+  // (/classement/manche/[id]) ; `label` n'en est que l'habillage visuel.
+  // Rempli automatiquement pour les manches connues par
+  // prisma/completer-saison-2026-2027.ts ; à saisir manuellement pour toute
+  // nouvelle manche créée depuis l'admin. Si vide, l'affichage retombe sur
+  // "Manche {number}".
+  label                 String?
+
+  // Regroupe les manches d'un même tournoi jouées sur plusieurs soirées
+  // (ex. un Deepstack en Day 1 / Day 2) qui ne doivent produire qu'UN SEUL
+  // classement combiné, au lieu d'un classement par manche — voir
+  // lib/ranking.ts (canonicalRoundOfGroup, syncPositionsFromBusts). Les
+  // manches d'un même groupe partagent la même valeur (ex. "deep-1") ; null
+  // pour une manche autonome (MTT, CFEPA, ou tout Deepstack sur une seule
+  // soirée). Le classement (Result) n'est écrit que sur la manche la plus
+  // récente du groupe (celle qui conclut le tournoi) ; les autres n'ont
+  // jamais leurs propres Result — voir /classement/manche/[id].
+  groupId               String?
+
+  // Lie une manche SITNGO au Day 2 de Deepstack en marge duquel elle se
+  // joue — self-relation nommée "SitngoLink". Nul pour toute manche qui
+  // n'est pas un Sit&Go. Voir lib/ranking.ts (isEligibleForSitngo) et
+  // app/calendrier/manche/[id]/page.tsx pour son usage : déterminer qui
+  // reste engagé dans le Deepstack lié (Day 1 + Day 2 via resolveGroup),
+  // donc qui n'est PAS éligible à l'inscription au Sit&Go.
+  linkedDeepstackRoundId String?
+  linkedDeepstackRound   Round?   @relation("SitngoLink", fields: [linkedDeepstackRoundId], references: [id])
+  sitngoRounds           Round[]  @relation("SitngoLink")
+
+  registrations         RoundRegistration[]
+  results               Result[]
+  operationLogs         RoundOperationLog[]
+  busts                 RoundBust[]
+  cfepaRoundRoles       CfepaRoundRole[]
+
+  @@unique([seasonId, number])
+}
+
+// Rôle attribué à un membre pour une manche CFEPA donnée : capitaine, ou
+// joueur pour l'une des deux sessions de la journée (le CFEPA se joue en
+// deux sessions, matin et après-midi) — voir CfepaRoundRole ci-dessous, géré
+// par les responsables/bureau/admin depuis la fiche de la manche (voir
+// app/calendrier/manche/[id]/page.tsx, components/CfepaRoundRolesPanel.tsx).
+// Un membre non listé dans CfepaRoundRole pour une manche donnée n'a
+// simplement aucun rôle assigné pour cette manche (pas de valeur par
+// défaut).
+enum CfepaRole {
+  CAPITAINE
+  MATIN
+  APRES_MIDI
+}
+
+// Seul un membre INSCRIT (RoundRegistration.status = INSCRIT) à LA MÊME
+// manche peut y recevoir un rôle — vérifié par
+// app/api/admin/cfepa-round-roles, pas seulement l'appartenance à l'Équipe
+// CFEPA (Member.cfepaTeam), qui ne fait que conditionner l'inscription elle-
+// même (voir app/api/rounds/[id]/register). La liste proposée à l'écran
+// d'affectation (voir CfepaRoundRolesPanel.tsx) est donc celle des inscrits
+// de cette manche, pas celle de l'équipe entière.
+model CfepaRoundRole {
+  id        String    @id @default(cuid())
+  roundId   String
+  round     Round     @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  memberId  String
+  member    Member    @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  role      CfepaRole
+  createdAt DateTime  @default(now())
+
+  @@unique([roundId, memberId])
+}
+
+enum RegistrationStatus {
+  INSCRIT
+  LISTE_ATTENTE
+  ANNULE
+}
+
+model RoundRegistration {
+  id         String   @id @default(cuid())
+  roundId    String
+  round      Round    @relation(fields: [roundId], references: [id])
+  memberId   String
+  member     Member   @relation(fields: [memberId], references: [id])
+  status     RegistrationStatus @default(INSCRIT)
+  timestamp  DateTime @default(now())
+
+  @@unique([roundId, memberId])
+}
+
+enum OperationAction {
+  OUVERTURE
+  FERMETURE
+}
+
+model RoundOperationLog {
+  id         String          @id @default(cuid())
+  roundId    String
+  round      Round           @relation(fields: [roundId], references: [id])
+  memberId   String
+  member     Member          @relation(fields: [memberId], references: [id])
+  action     OperationAction
+  timestamp  DateTime        @default(now())
+}
+
+// ── RÉSULTATS & CLASSEMENT ──────────────────────
+
+model Result {
+  id          String   @id @default(cuid())
+  roundId     String
+  round       Round    @relation(fields: [roundId], references: [id])
+  memberId    String
+  member      Member   @relation(fields: [memberId], references: [id])
+  position    Int
+  points      Int
+  // Part de `points` due au bonus "chasseur de champion" (sortir le
+  // vainqueur de la manche précédente d'un format donné) — voir
+  // lib/ranking.ts, CHAMPION_BUST_BONUS. Déjà inclus dans `points`, stocké
+  // à part uniquement pour l'affichage (colonne "Bonus" du classement).
+  bonusPoints Int      @default(0)
+  kills       Int      @default(0)
+  notes       String?
+
+  @@unique([roundId, memberId])
+}
+
+// Journal des busts (éliminations) d'une manche, saisi joueur par joueur par
+// le bureau, un responsable ou l'admin depuis /admin/resultats : qui a busté,
+// à quelle place, et qui l'a killé. Sert de source de vérité pour dériver
+// automatiquement Result.position (place du busté) et Result.kills (nombre
+// de fois où chacun apparaît comme killer) — voir /api/admin/busts.
+// killerMemberId est nul quand l'éliminé n'a pas été killé par un autre
+// joueur identifié (ex. élimination par les blindes).
+model RoundBust {
+  id             String   @id @default(cuid())
+  roundId        String
+  round          Round    @relation(fields: [roundId], references: [id])
+  bustedMemberId String
+  bustedMember   Member   @relation("BustedMember", fields: [bustedMemberId], references: [id])
+  killerMemberId String?
+  killerMember   Member?  @relation("KillerMember", fields: [killerMemberId], references: [id])
+  position       Int
+  createdAt      DateTime @default(now())
+
+  @@unique([roundId, bustedMemberId])
+}
+
+model RankingConfig {
+  id               String   @id @default(cuid())
+  seasonId         String   @unique
+  season           Season   @relation(fields: [seasonId], references: [id])
+  // Barème réel du club : les points dépendent à la fois du format (le
+  // barème MTT et le barème Deepstack diffèrent) ET du nombre de
+  // participants de la manche (plus il y a de joueurs, plus la 1ère place
+  // rapporte) — voir lib/ranking.ts, pointsForPosition. Forme :
+  // { "MTT": { "<nb participants>": { "<place>": points, ... }, ... },
+  //   "DEEPSTACK": { ... } }
+  // ex: { "MTT": { "28": { "1": 104, "2": 88, "3": 79, ... } } }
+  pointsTable      Json
+  bonusRules       Json?
+  penaltyRules     Json?
+  nbRoundsCounted  Int?     // ex: 8 meilleurs résultats sur 10 — null = tout compte
+  jokerRule        Boolean  @default(false)
+  tieBreakRule     String?  // ex: "nb_victoires", "meilleur_resultat"
+}
+
+// Table dérivée, recalculée automatiquement — jamais éditée directement
+model Ranking {
+  id             String   @id @default(cuid())
+  seasonId       String
+  season         Season   @relation(fields: [seasonId], references: [id])
+  memberId       String
+  member         Member   @relation(fields: [memberId], references: [id])
+  totalPoints    Int      @default(0)
+  participations Int      @default(0)
+  wins           Int      @default(0)
+  podiums        Int      @default(0)
+  totalKills     Int      @default(0)
+  // Cumul des Result.bonusPoints de la saison — déjà inclus dans
+  // totalPoints, comme totalKills pas limité aux N meilleurs résultats.
+  totalBonusPoints Int    @default(0)
+  bestResult     String?
+  lastUpdated    DateTime @updatedAt
+
+  @@unique([seasonId, memberId])
+}
+
+// Classement parallèle dédié aux manches SITNGO (voir RoundFormat, enum
+// ci-dessus, et Round.linkedDeepstackRoundId) — même structure que Ranking,
+// mais jamais mélangé avec lui : recalculé séparément par
+// lib/ranking.ts, recalculateSitngoRanking, à chaque appel de
+// recalculateRanking. Table dérivée, jamais éditée directement.
+model SitngoRanking {
+  id               String   @id @default(cuid())
+  seasonId         String
+  season           Season   @relation(fields: [seasonId], references: [id])
+  memberId         String
+  member           Member   @relation(fields: [memberId], references: [id])
+  totalPoints      Int      @default(0)
+  participations   Int      @default(0)
+  wins             Int      @default(0)
+  podiums          Int      @default(0)
+  totalKills       Int      @default(0)
+  totalBonusPoints Int      @default(0)
+  bestResult       String?
+  lastUpdated      DateTime @updatedAt
+
+  @@unique([seasonId, memberId])
+}
+
+// ── ACTUALITÉS & COMMUNICATIONS ─────────────────
+
+enum NewsCategory {
+  VIE_DU_CLUB
+  RESULTATS
+  EVENEMENTS
+  INFORMATIONS
+  COMMUNICATION_BUREAU
+}
+
+enum NewsStatus {
+  BROUILLON
+  PUBLIE
+  DEPUBLIE
+}
+
+model News {
+  id            String       @id @default(cuid())
+  title         String
+  image         String?
+  body          String
+  category      NewsCategory
+  authorId      String
+  status        NewsStatus   @default(BROUILLON)
+  publishAt     DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Renseignés uniquement pour les actus importées automatiquement depuis
+  // le site historique (voir lib/jimdoSync.ts) — null pour les actus
+  // saisies manuellement par le bureau.
+  sourceUrl     String?      @unique
+  sourceHash    String?
+  autoImported  Boolean      @default(false)
+}
+
+// "J'aime" sur une actu/communication (voir app/actualites) — un like par
+// membre/invité connecté et par actu (contrainte unique newsId+userId), pas
+// de relation Prisma vers News/User pour rester cohérent avec le reste du
+// schéma (News.authorId est lui aussi une simple chaîne, sans relation).
+model NewsLike {
+  id        String   @id @default(cuid())
+  newsId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([newsId, userId])
+  @@index([newsId])
+}
+
+// "J'aime" sur un article de la rubrique Stratégie (voir
+// app/strategie/[slug]) — même principe que NewsLike ci-dessus : un like
+// par compte connecté et par article.
+model StrategieArticleLike {
+  id        String   @id @default(cuid())
+  articleId String
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([articleId, userId])
+  @@index([articleId])
+}
+
+enum StrategieLevel {
+  DEBUTANT
+  INTERMEDIAIRE
+  AVANCE
+}
+
+// Articles de la rubrique "Stratégie & pédagogie poker" (/strategie) —
+// éditables par le bureau depuis /admin/strategie. Remplace l'ancien
+// contenu codé en dur (lib/strategieContent.ts, conservé en référence).
+model StrategieArticle {
+  id          String         @id @default(cuid())
+  slug        String         @unique
+  title       String
+  excerpt     String
+  takeaway    String
+  content     Json           // paragraphes : string[]
+  // Quiz de fin d'article, facultatif : [{ question, options: string[], correctIndex }]
+  quiz        Json?
+  level       StrategieLevel
+  readingTime String
+  status      NewsStatus     @default(BROUILLON)
+  // Mis en avant en tête de la page /strategie (un seul à la fois en pratique,
+  // géré côté admin — le premier trouvé fait foi si plusieurs le sont).
+  featured    Boolean        @default(false)
+  authorId    String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+}
+
+// ── SITE HISTORIQUE (amicalpokerclub.jimdofree.com) ─────────────
+//
+// Le club dispose d'un ancien site (Jimdo) qui reste la référence pour
+// certaines informations (partenaires, calendrier détaillé, photos). Comme
+// Jimdo ne propose pas de flux RSS/API, lib/jimdoSync.ts récupère
+// directement le HTML public de ce site (qui appartient au club) et le
+// transforme en contenu structuré ci-dessous. Un hash du contenu de chaque
+// page évite de re-traiter une page qui n'a pas changé.
+
+model Partner {
+  id           String   @id @default(cuid())
+  name         String
+  description  String?
+  logoUrl      String?
+  websiteUrl   String?
+  position     Int      @default(0)
+  sourceUrl    String   @unique
+  sourceHash   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model LegacyCalendarSnapshot {
+  id          String   @id @default(cuid())
+  label       String   // ex: "Calendrier 2026/2027"
+  sourceUrl   String   @unique
+  sourceHash  String
+  rows        Json?    // [{ date, tournoi, heure, lieu }] si le tableau a pu être extrait
+  rawText     String   // repli textuel si l'extraction en tableau échoue
+  updatedAt   DateTime @updatedAt
+}
+
+// Classement affiché tel quel depuis le site historique (référence, lecture
+// seule) — distinct du modèle Ranking, qui reste la table dérivée officielle
+// calculée à partir des Result du nouveau site. Tant que les manches de la
+// saison ne sont pas ressaisies ici, ce classement importé sert de repère.
+model LegacyRankingSnapshot {
+  id          String   @id @default(cuid())
+  label       String   // ex: "Classement — Saison 2026/2027"
+  sourceUrl   String   @unique
+  sourceHash  String
+  rows        Json?    // [{ place, joueur, points, pj, pg, bonus, ratio, tf }]
+  headsRows   Json?    // [{ place, joueur, tetes, ratio }] — classement "têtes" (KO)
+  rawText     String   // repli textuel si l'extraction en tableau échoue
+  updatedAt   DateTime @updatedAt
+}
+
+// Boutique (page "Commande Vêtements APCV" du site historique) : t-shirt,
+// polo, veste floqués et écusson du club. La commande elle-même reste gérée
+// via le formulaire de commentaire du site historique (voir productUrl /
+// le lien vers amicalpokerclub.jimdofree.com affiché sur /boutique) — cette
+// table sert uniquement à afficher le catalogue à jour sur le nouveau site.
+model LegacyBoutiqueSnapshot {
+  id          String   @id @default(cuid())
+  label       String   // ex: "Boutique — vêtements APCV"
+  sourceUrl   String   @unique
+  sourceHash  String
+  items       Json?    // [{ name, price, sizes, productUrl }] si l'extraction structurée réussit
+  rawText     String   // repli textuel (conditions de commande, contact...)
+  updatedAt   DateTime @updatedAt
+}
+
+enum PokerNewsStatus {
+  A_VALIDER
+  PUBLIE
+  REJETE
+}
+
+model PokerNewsItem {
+  id                String          @id @default(cuid())
+  title             String
+  summary           String
+  sourceName        String
+  sourceUrl         String          @unique // sert aussi de clé de déduplication pour la synchro automatique
+  imageUrl          String?
+  category          String
+  status            PokerNewsStatus @default(A_VALIDER)
+  autoImported      Boolean         @default(false) // true = importé automatiquement par un flux RSS
+  submittedById     String?
+  submittedByName   String?
+  validatedById     String?
+  fetchedAt         DateTime        @default(now())
+  publishedAt       DateTime?
+}
+
+enum ContentRequestType {
+  ACTU_POKER
+  STRATEGIE
+  PHOTO_VIDEO
+}
+
+enum ContentRequestStatus {
+  EN_ATTENTE
+  TRAITEE
+  REJETEE
+}
+
+// Proposition de contenu par un membre (actu poker, article stratégie,
+// photo ou vidéo) envoyée depuis /proposer-contenu : un membre ne publie
+// jamais directement dans ces rubriques (réservé au bureau/responsables),
+// il transmet une proposition ici. Un responsable/admin la traite depuis
+// /admin/demandes-contenu, en créant lui-même le contenu correspondant
+// (dans /admin/poker-news, /admin/strategie ou /admin/galerie) à partir
+// des informations transmises.
+model ContentRequest {
+  id            String                @id @default(cuid())
+  type          ContentRequestType
+  memberId      String
+  member        Member                @relation(fields: [memberId], references: [id])
+  title         String
+  description   String                // résumé de l'actu, idée d'article, ou légende/contexte de la photo-vidéo
+  link          String?               // lien source (actu) ou lien vers la photo/vidéo (l'hébergement se fait ailleurs, ex. Drive)
+  status        ContentRequestStatus  @default(EN_ATTENTE)
+  createdAt     DateTime              @default(now())
+  processedAt   DateTime?
+  processedById String?
+  adminNote     String?               // motif de refus, ou note du bureau à l'attention du membre
+}
+
+enum CommVisibility {
+  GENERAL
+  BUREAU
+  RESPONSABLES
+}
+
+model Communication {
+  id           String         @id @default(cuid())
+  title        String
+  body         String
+  visibility   CommVisibility @default(GENERAL)
+  authorId     String
+  publishedAt  DateTime       @default(now())
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  userId     String
+  message    String
+  type       String
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+// ── FORUM ────────────────────────────────────────
+
+// COMMUN : forum ouvert à tous les membres (et invités). BUREAU : forum
+// interne réservé aux rôles RESPONSABLE/BUREAU/ADMIN — voir /forum-bureau.
+enum ForumArea {
+  COMMUN
+  BUREAU
+}
+
+model ForumTopic {
+  id         String        @id @default(cuid())
+  title      String
+  category   String        // Général, Organisation, Stratégie, Petites annonces
+  body       String
+  authorId   String
+  author     User          @relation(fields: [authorId], references: [id])
+  pinned     Boolean       @default(false)
+  area       ForumArea     @default(COMMUN)
+  createdAt  DateTime      @default(now())
+
+  replies    ForumReply[]
+}
+
+model ForumReply {
+  id         String     @id @default(cuid())
+  topicId    String
+  topic      ForumTopic @relation(fields: [topicId], references: [id])
+  authorId   String
+  author     User       @relation(fields: [authorId], references: [id])
+  body       String
+  createdAt  DateTime   @default(now())
+}
+
+// ── ÉVÉNEMENTS, GALERIE, DOCUMENTS ──────────────
+
+model Event {
+  id             String   @id @default(cuid())
+  name           String
+  description    String
+  date           DateTime
+  location       String
+  seats          Int?
+  responsibleId  String?
+}
+
+// PHOTO (albums historiques + nouveaux imports) ou VIDEO (liens YouTube/
+// Vimeo ou fichier vidéo direct) — un album est de l'un ou l'autre, jamais
+// les deux à la fois (voir app/galerie, onglets "Galerie photos"/"Galerie
+// vidéos"). PHOTO par défaut pour rester rétrocompatible avec les albums
+// existants, créés avant cette distinction.
+enum AlbumType {
+  PHOTO
+  VIDEO
+}
+
+model Album {
+  id        String    @id @default(cuid())
+  title     String
+  type      AlbumType @default(PHOTO)
+  seasonId  String?
+  photos    Photo[]
+  videos    Video[]
+}
+
+model Photo {
+  id         String   @id @default(cuid())
+  albumId    String
+  album      Album    @relation(fields: [albumId], references: [id])
+  photoUrl   String
+  caption    String?
+  sourceUrl  String?  @unique // dédup pour les photos importées du site historique
+  // Sert au point de nouveauté de la Galerie dans l'espace membre (voir
+  // app/espace-membre/page.tsx) — absent des photos existantes avant cet
+  // ajout (valeur par défaut à la migration : date de la migration elle-même).
+  createdAt  DateTime @default(now())
+
+  likes      PhotoLike[]
+  comments   PhotoComment[]
+}
+
+// "J'aime" sur une photo de la Galerie — même principe que NewsLike/
+// StrategieArticleLike ci-dessous : un like par compte connecté et par
+// photo (membre ou invité, la Galerie leur étant réservée à tous deux).
+model PhotoLike {
+  id        String   @id @default(cuid())
+  photoId   String
+  photo     Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([photoId, userId])
+  @@index([photoId])
+}
+
+// Commentaire sur une photo de la Galerie — même principe que ForumReply
+// (auteur relié au compte, pas de modification a posteriori, uniquement
+// suppression). Soumis à la même modération que le forum commun (voir
+// lib/forumModeration.ts) pour éviter d'ouvrir une brèche de spam ailleurs
+// sur le site à un compte déjà suspendu du forum.
+model PhotoComment {
+  id        String   @id @default(cuid())
+  photoId   String
+  photo     Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([photoId])
+}
+
+// Vidéo de la Galerie (voir Album.type=VIDEO ci-dessus) — même structure que
+// Photo, mais videoUrl pointe vers un lien externe (YouTube, Vimeo) ou un
+// fichier vidéo direct (.mp4…) plutôt qu'une image : aucune infrastructure
+// d'hébergement/encodage vidéo sur le site, voir lib/media.ts pour la
+// détection du type de lien et son rendu (iframe embed vs balise <video>).
+model Video {
+  id         String   @id @default(cuid())
+  albumId    String
+  album      Album    @relation(fields: [albumId], references: [id])
+  videoUrl   String
+  caption    String?
+  createdAt  DateTime @default(now())
+
+  likes      VideoLike[]
+  comments   VideoComment[]
+}
+
+// "J'aime" sur une vidéo de la Galerie — voir PhotoLike ci-dessus, même principe.
+model VideoLike {
+  id        String   @id @default(cuid())
+  videoId   String
+  video     Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  userId    String
+  createdAt DateTime @default(now())
+
+  @@unique([videoId, userId])
+  @@index([videoId])
+}
+
+// Commentaire sur une vidéo de la Galerie — voir PhotoComment ci-dessus, même principe.
+model VideoComment {
+  id        String   @id @default(cuid())
+  videoId   String
+  video     Video    @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([videoId])
+}
+
+// ── VIE ASSOCIATIVE (portraits de membres) ──────
+//
+// Portraits publiés sur /vie-du-club pour donner un visage humain au club.
+// Saisis manuellement par le bureau (jamais générés automatiquement) — le
+// lien vers Member est optionnel car un portrait peut être rédigé avant que
+// la personne n'ait un compte, ou pour un ancien membre.
+
+model Portrait {
+  id           String   @id @default(cuid())
+  memberId     String?
+  member       Member?  @relation(fields: [memberId], references: [id])
+  displayName  String
+  role         String?  // ex: "Trésorier", "Membre depuis 2019"
+  bio          String
+  photoUrl     String?
+  published    Boolean  @default(false)
+  position     Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Document {
+  id        String   @id @default(cuid())
+  title     String
+  fileUrl   String
+  category  String   // règlement / statuts / CGU
+}
+
+// ── NEWSLETTER ───────────────────────────────────
+//
+// Capture d'e-mail pour les visiteurs pas encore prêts à adhérer (encart
+// dans le pied de page, sur tout le site) : juste une adresse et sa date
+// d'inscription, à charge du bureau d'envoyer ensuite les nouvelles depuis
+// son propre outil d'e-mailing (aucun envoi automatique n'est fait ici).
+
+model NewsletterSubscriber {
+  id         String   @id @default(cuid())
+  email      String   @unique
+  source     String?  // page d'où vient l'inscription, ex: "footer", "strategie"
+  createdAt  DateTime @default(now())
+}
+
+// ── TRAFIC ───────────────────────────────────────
+//
+// Compteur de visites maison (sans cookie, sans service externe) : une ligne
+// par page vue, créée par POST /api/track-visit (appelé côté client par
+// components/VisitTracker.tsx à chaque navigation, en production
+// uniquement). Sert au bloc "Trafic du site" de /espace-membre (bureau,
+// responsables, admin) — aujourd'hui / 7 jours / 30 jours / total, via
+// prisma.pageView.count. Aucune donnée personnelle : ni IP, ni identifiant
+// de visiteur, juste le chemin, l'horodatage et si la visite avait une
+// session ouverte.
+// authenticated : vrai si la visite avait une session valide (membre ou
+// invité connecté à son espace) au moment de la requête POST
+// /api/track-visit — déterminé côté serveur (voir cette route), jamais
+// envoyé par le client. Sert à distinguer, dans le bloc "Trafic du site",
+// les visiteurs connectés à leur espace des visiteurs cachés (anonymes,
+// non identifiés).
+model PageView {
+  id            String   @id @default(cuid())
+  path          String
+  authenticated Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// ── AUDIT ────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  action     String
+  entity     String
+  entityId   String
+  timestamp  DateTime @default(now())
+}
