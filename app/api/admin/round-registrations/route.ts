@@ -3,7 +3,7 @@ import { getServerSession } from "next-auth";
 import { z } from "zod";
 import { authOptions, hasRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { isEligibleForSitngo } from "@/lib/ranking";
+import { isEligibleForSitngo, isQualifiedForDeepstackDay2 } from "@/lib/ranking";
 
 // Gestion des inscriptions à une manche par le bureau, un responsable ou
 // l'admin (voir hasRole(role, "RESPONSABLE"), hiérarchique : couvre aussi
@@ -17,9 +17,26 @@ import { isEligibleForSitngo } from "@/lib/ranking";
 // joueur sélectionnable dans le journal des busts de /admin/resultats —
 // voir components/ResultsAdminPanel.tsx.
 //
+// PATCH : modification du stack de départ (startingStack) d'un membre déjà
+// inscrit — voir plus bas, utilisé pour le Day 2 d'un Deepstack groupé.
+//
 // DELETE : désinscription d'un membre à la place du bureau/responsable/admin
 // — voir plus bas, même logique que l'auto-désinscription du membre.
-const schema = z.object({ roundId: z.string(), memberId: z.string() });
+const schema = z.object({
+  roundId: z.string(),
+  memberId: z.string(),
+  // Stack de départ (en jetons) — facultatif, saisi au moment de l'ajout du
+  // joueur. Surtout utile pour le Day 2 d'un Deepstack groupé (voir
+  // Round.groupId, components/AdminRegisterPanel.tsx), mais pas restreint à
+  // ce cas précis côté API.
+  startingStack: z.number().int().nonnegative().nullable().optional(),
+});
+
+const patchSchema = z.object({
+  roundId: z.string(),
+  memberId: z.string(),
+  startingStack: z.number().int().nonnegative().nullable(),
+});
 
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
@@ -35,7 +52,7 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Requête invalide." }, { status: 400 });
   }
-  const { roundId, memberId } = parsed.data;
+  const { roundId, memberId, startingStack } = parsed.data;
 
   const round = await prisma.round.findUnique({ where: { id: roundId } });
   if (!round) {
@@ -62,13 +79,66 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Day 2 d'un Deepstack groupé (voir Round.groupId) : seuls les joueurs
+  // qualifiés (inscrits au Day 1, pas éliminés) peuvent être ajoutés —
+  // jamais un joueur quelconque, même via cet ajout manuel. Voir
+  // lib/ranking.ts, isQualifiedForDeepstackDay2. Sans effet pour le Day 1
+  // (ou toute manche non groupée) : l'ajout manuel y reste libre.
+  if (round.format === "DEEPSTACK" && round.groupId) {
+    const qualified = await isQualifiedForDeepstackDay2(memberId, roundId);
+    if (!qualified) {
+      return NextResponse.json(
+        {
+          error:
+            "Ce joueur n'est pas qualifié pour ce Day 2 : il doit avoir été inscrit au Day 1 sans en avoir été éliminé.",
+        },
+        { status: 403 }
+      );
+    }
+  }
+
   const registration = await prisma.roundRegistration.upsert({
     where: { roundId_memberId: { roundId, memberId } },
-    update: { status: "INSCRIT" },
-    create: { roundId, memberId, status: "INSCRIT" },
+    update: { status: "INSCRIT", ...(startingStack !== undefined ? { startingStack } : {}) },
+    create: { roundId, memberId, status: "INSCRIT", startingStack: startingStack ?? null },
   });
 
   return NextResponse.json(registration, { status: 201 });
+}
+
+// PATCH /api/admin/round-registrations — modifie uniquement le stack de
+// départ d'un membre déjà inscrit (ex. correction après coup), sans
+// retoucher à son statut ni revérifier l'éligibilité Sit&Go (déjà
+// inscrit = déjà validé). Réservé au bureau, aux responsables et à l'admin.
+export async function PATCH(req: NextRequest) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
+    return NextResponse.json({ error: "Non authentifié" }, { status: 401 });
+  }
+  const role = (session.user as any).role;
+  if (!hasRole(role, "RESPONSABLE")) {
+    return NextResponse.json({ error: "Droits insuffisants" }, { status: 403 });
+  }
+
+  const parsed = patchSchema.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Requête invalide." }, { status: 400 });
+  }
+  const { roundId, memberId, startingStack } = parsed.data;
+
+  const existing = await prisma.roundRegistration.findUnique({
+    where: { roundId_memberId: { roundId, memberId } },
+  });
+  if (!existing) {
+    return NextResponse.json({ error: "Ce membre n'est pas inscrit à cette manche." }, { status: 404 });
+  }
+
+  const registration = await prisma.roundRegistration.update({
+    where: { id: existing.id },
+    data: { startingStack },
+  });
+
+  return NextResponse.json(registration);
 }
 
 // DELETE /api/admin/round-registrations?roundId=xxx&memberId=yyy —

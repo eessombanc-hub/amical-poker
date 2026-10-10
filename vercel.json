@@ -11,6 +11,14 @@
     {
       "path": "/api/cron/round-reminder",
       "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/deepstack-day2",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/deepstack-day2-announcement",
+      "schedule": "0 7 * * 1"
     }
   ]
 }

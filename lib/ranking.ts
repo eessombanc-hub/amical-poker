@@ -220,6 +220,52 @@ export async function isEligibleForSitngo(memberId: string, linkedDeepstackRound
 }
 
 /**
+ * Qualification au Day 2 d'un Deepstack groupé (voir Round.groupId) — à
+ * l'inverse d'isEligibleForSitngo ci-dessus : un membre n'est qualifié que
+ * s'il EST inscrit (statut INSCRIT) à une manche du groupe (en pratique le
+ * Day 1, ou déjà le Day 2 lui-même) ET qu'il n'a pas été éliminé (présent
+ * dans RoundBust) sur une manche du groupe. Aucune inscription en ligne au
+ * Day 2 n'existe (voir app/calendrier/page.tsx, isContinuationDay) : seul
+ * le bureau/responsable/admin y ajoute les qualifiés, un par un, depuis
+ * components/AdminRegisterPanel.tsx — jamais un joueur quelconque. Pour une
+ * manche qui n'est pas un Day 2 (manche seule, ou Day 1 lui-même), retourne
+ * toujours true : aucune restriction à l'ajout manuel dans ce cas. Utilisée
+ * par /api/admin/round-registrations (POST) pour refuser l'ajout d'un
+ * joueur non qualifié, et par app/calendrier/manche/[id]/page.tsx pour ne
+ * proposer que les joueurs qualifiés dans le panneau d'ajout.
+ */
+export async function isQualifiedForDeepstackDay2(memberId: string, roundId: string): Promise<boolean> {
+  const round = await prisma.round.findUnique({
+    where: { id: roundId },
+    select: { id: true, groupId: true, seasonId: true, format: true },
+  });
+  if (!round || round.format !== "DEEPSTACK" || !round.groupId) return true;
+
+  const siblings = await prisma.round.findMany({
+    where: { groupId: round.groupId, seasonId: round.seasonId },
+    select: { id: true, date: true },
+    orderBy: { date: "asc" },
+  });
+  // Manche la plus ancienne du groupe (Day 1) : pas de restriction, c'est
+  // là que l'ajout libre d'un joueur présent reste possible.
+  if (siblings.length === 0 || siblings[0].id === round.id) return true;
+
+  const roundIds = siblings.map((s) => s.id);
+  const [registration, bust] = await Promise.all([
+    prisma.roundRegistration.findFirst({
+      where: { roundId: { in: roundIds }, memberId, status: "INSCRIT" },
+      select: { id: true },
+    }),
+    prisma.roundBust.findFirst({
+      where: { roundId: { in: roundIds }, bustedMemberId: memberId },
+      select: { id: true },
+    }),
+  ]);
+
+  return !!registration && !bust;
+}
+
+/**
  * Barème réel du club : dépend à la fois du format de la manche (MTT vs
  * Deepstack ont des grilles différentes) et du nombre de participants (plus
  * il y en a, plus les premières places rapportent) — voir

@@ -9,6 +9,8 @@ import CancelRegistrationButton from "@/components/CancelRegistrationButton";
 import AdminUnregisterButton from "@/components/AdminUnregisterButton";
 import CfepaRoundRolesPanel, { type CfepaRegisteredPlayer } from "@/components/CfepaRoundRolesPanel";
 import SitngoRegistrationPanel from "@/components/SitngoRegistrationPanel";
+import AdminRegisterPanel from "@/components/AdminRegisterPanel";
+import StartingStackInput from "@/components/StartingStackInput";
 
 export const dynamic = "force-dynamic";
 
@@ -147,6 +149,72 @@ export default async function CalendrierManchePage(props: { params: Promise<{ id
     );
   }
 
+  // Day 2 d'un Deepstack groupé (voir Round.groupId) : la manche la plus
+  // ancienne du groupe est le Day 1, toute autre manche du même groupe est
+  // un jour suivant — même convention que isContinuationDay dans
+  // app/calendrier/page.tsx. Conditionne à la fois la saisie du stack de
+  // départ (RoundRegistration.startingStack) ET la restriction de l'ajout
+  // manuel ci-dessous (seuls les qualifiés, jamais un joueur quelconque).
+  let isDeepstackDay2 = false;
+  let deepstackGroupRoundIds: string[] = [];
+  if (round.format === "DEEPSTACK" && round.groupId) {
+    const siblings = await prisma.round.findMany({
+      where: { groupId: round.groupId },
+      select: { id: true, date: true },
+      orderBy: { date: "asc" },
+    });
+    if (siblings.length > 0) {
+      deepstackGroupRoundIds = siblings.map((s) => s.id);
+      isDeepstackDay2 = siblings[0].id !== round.id;
+    }
+  }
+
+  // Ajout sur place d'un joueur à une manche classique (MTT, Deepstack,
+  // CFEPA) — réservé au bureau, aux responsables et à l'admin
+  // (canEnterResults), voir components/AdminRegisterPanel.tsx. Pas pour les
+  // manches Sit&Go, qui ont leur propre panneau avec des règles
+  // d'éligibilité spécifiques (isEligibleForSitngo) — voir ci-dessus.
+  //
+  // Day 2 d'un Deepstack : à l'inverse du cas général (tout membre actif
+  // non encore inscrit), seuls les joueurs QUALIFIÉS sont proposés — ceux
+  // inscrits au Day 1 et pas éliminés (voir lib/ranking.ts,
+  // isQualifiedForDeepstackDay2, même règle revérifiée côté serveur dans
+  // /api/admin/round-registrations : impossible d'ajouter un joueur
+  // quelconque ici, même en contournant ce menu).
+  let eligibleMembersForRegister: { id: string; nickname: string; firstName: string; lastName: string }[] = [];
+  if (!isSitngoRound && canEnterResults) {
+    const alreadyRegisteredIds = new Set(registrations.map((r) => r.memberId));
+    if (isDeepstackDay2) {
+      const [groupRegistrations, groupBusts] = await Promise.all([
+        prisma.roundRegistration.findMany({
+          where: { roundId: { in: deepstackGroupRoundIds }, status: "INSCRIT" },
+          include: { member: { select: { id: true, nickname: true, firstName: true, lastName: true } } },
+        }),
+        prisma.roundBust.findMany({
+          where: { roundId: { in: deepstackGroupRoundIds } },
+          select: { bustedMemberId: true },
+        }),
+      ]);
+      const bustedIds = new Set(groupBusts.map((b) => b.bustedMemberId));
+      const qualifiedById = new Map<string, { id: string; nickname: string; firstName: string; lastName: string }>();
+      for (const reg of groupRegistrations) {
+        if (!bustedIds.has(reg.memberId) && !alreadyRegisteredIds.has(reg.memberId)) {
+          qualifiedById.set(reg.memberId, reg.member);
+        }
+      }
+      eligibleMembersForRegister = [...qualifiedById.values()].sort((a, b) =>
+        a.nickname.localeCompare(b.nickname, "fr", { sensitivity: "base" })
+      );
+    } else {
+      const activeMembers = await prisma.member.findMany({
+        where: { membershipStatus: "ACTIF" },
+        orderBy: { nickname: "asc" },
+        select: { id: true, nickname: true, firstName: true, lastName: true },
+      });
+      eligibleMembersForRegister = activeMembers.filter((m) => !alreadyRegisteredIds.has(m.id));
+    }
+  }
+
   return (
     <div className="px-7 py-14">
       <div className="max-w-2xl mx-auto panel">
@@ -204,6 +272,15 @@ export default async function CalendrierManchePage(props: { params: Promise<{ id
           <SitngoRegistrationPanel roundId={round.id} eligibleMembers={eligibleMembersForSitngo} />
         )}
 
+        {!isSitngoRound && canEnterResults && (
+          <AdminRegisterPanel
+            roundId={round.id}
+            eligibleMembers={eligibleMembersForRegister}
+            collectStartingStack={isDeepstackDay2}
+            restrictedToQualifiedDay2={isDeepstackDay2}
+          />
+        )}
+
         {myRegistration && (
           <CancelRegistrationButton
             roundId={round.id}
@@ -225,9 +302,14 @@ export default async function CalendrierManchePage(props: { params: Promise<{ id
           </>
         )}
 
-        <h2 className="text-base font-serif font-semibold mb-3">
+        <h2 className="text-base font-serif font-semibold mb-1">
           Joueurs inscrits{inscrits.length > 0 && ` (${inscrits.length}/${round.maxSeats})`}
         </h2>
+        {isDeepstackDay2 && canEnterResults && (
+          <p className="text-xs text-sage mb-3">
+            Day 2 — le champ « Stack » reprend le nombre de jetons conservé par chaque joueur à la fin du Day 1.
+          </p>
+        )}
         {inscrits.length > 0 ? (
           <ul className="space-y-2 mb-8">
             {inscrits.map((r, i) => (
@@ -238,6 +320,9 @@ export default async function CalendrierManchePage(props: { params: Promise<{ id
                 <span className="text-xs text-sage/70 font-mono-club w-5">{i + 1}</span>
                 <Avatar photoUrl={r.member.photoUrl} name={r.member.nickname} size={32} />
                 <span className="text-sm font-medium">{r.member.nickname}</span>
+                {isDeepstackDay2 && canEnterResults && (
+                  <StartingStackInput roundId={round.id} memberId={r.memberId} initialValue={r.startingStack} />
+                )}
                 {canEnterResults && (
                   <span className="ml-auto">
                     <AdminUnregisterButton roundId={round.id} memberId={r.memberId} />

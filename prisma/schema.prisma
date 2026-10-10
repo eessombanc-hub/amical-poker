@@ -250,6 +250,26 @@ model Round {
   // rappel n'a encore été envoyé pour cette manche.
   reminderSentAt        DateTime?
 
+  // Qualification automatique au Day 2 (voir groupId ci-dessous) : horodatage
+  // du passage du cron qui, le lendemain d'un Day 1 de Deepstack à 3h du
+  // matin (heure de Paris), inscrit automatiquement au Day 2 tous les
+  // joueurs qui étaient inscrits au Day 1 et n'y ont pas été éliminés — voir
+  // lib/deepstackDay2.ts, app/api/cron/deepstack-day2. Posé UNIQUEMENT sur
+  // la manche Day 1 (jamais sur le Day 2 lui-même), pour ne jamais relancer
+  // deux fois cette inscription automatique si le cron se déclenche
+  // plusieurs fois le même jour. Sans effet pour une manche qui n'est pas un
+  // Day 1 de groupe Deepstack (toujours null).
+  day2AutoRegisteredAt  DateTime?
+
+  // Annonce "Day 2 qualifiés" dans Actualités (voir lib/deepstackDay2.ts,
+  // publishDeepstackDay2Announcements, et app/api/cron/
+  // deepstack-day2-announcement) : horodatage de sa publication, posée le
+  // lundi suivant le Day 1 — après que le bureau ait eu le temps de
+  // renseigner les stacks. Même garde-fou que day2AutoRegisteredAt :
+  // UNIQUEMENT sur le Day 1, jamais republiée si le cron hebdomadaire
+  // retombe deux fois sur la même semaine.
+  day2AnnouncementSentAt DateTime?
+
   // Vrai nom de la manche, affiché au public (calendrier, page de
   // classement dédiée) à la place du numéro interne "Manche N" — ex.
   // "MTT 3", "Deepstack 2 — Day 1", "CFEPA 1". Le numéro (`number`)
@@ -338,6 +358,15 @@ model RoundRegistration {
   member     Member   @relation(fields: [memberId], references: [id])
   status     RegistrationStatus @default(INSCRIT)
   timestamp  DateTime @default(now())
+
+  // Stack de départ (en jetons) avec lequel ce joueur démarre la manche —
+  // utilisé pour le Day 2 d'un Deepstack groupé (voir Round.groupId) : les
+  // joueurs qualifiés (non bustés au Day 1) sont ajoutés manuellement au
+  // Day 2 (voir app/api/admin/round-registrations, POST) avec le stack
+  // qu'ils conservent de la veille. Facultatif et disponible sur toute
+  // manche (pas seulement Day 2) si jamais utile ailleurs ; non affiché
+  // côté public. Voir components/AdminRegisterPanel.tsx.
+  startingStack Int?
 
   @@unique([roundId, memberId])
 }

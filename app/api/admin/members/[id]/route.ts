@@ -12,6 +12,11 @@ const COTISATION_STATUSES = ["NON_PAYEE", "PARTIELLE", "PAYEE"] as const;
 
 const updateSchema = z.object({
   role: z.enum(ROLES).optional(),
+  // Adresse e-mail du compte — modifiable par un admin (ex. le membre a
+  // changé d'adresse, ou une faute de frappe à la création). Normalisée en
+  // minuscules comme à la connexion (voir lib/auth.ts, authorize) ; unicité
+  // revérifiée plus bas (contrainte @unique sur User.email).
+  email: z.string().trim().toLowerCase().email().optional(),
   membershipStatus: z.enum(STATUSES).optional(),
   publicResults: z.boolean().optional(),
   birthDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
@@ -60,9 +65,23 @@ export async function PATCH(req: NextRequest, props: { params: Promise<{ id: str
     );
   }
 
+  // Changement d'e-mail : on revérifie nous-mêmes l'unicité avant d'écrire,
+  // pour pouvoir renvoyer un message clair plutôt que laisser remonter
+  // l'erreur Prisma brute (contrainte @unique sur User.email).
+  if (data.email && data.email !== target.email) {
+    const existing = await prisma.user.findUnique({ where: { email: data.email } });
+    if (existing && existing.id !== target.id) {
+      return NextResponse.json(
+        { error: "Cette adresse e-mail est déjà utilisée par un autre compte." },
+        { status: 409 }
+      );
+    }
+  }
+
   let generatedPassword: string | null = null;
-  const userUpdate: { role?: (typeof ROLES)[number]; passwordHash?: string } = {};
+  const userUpdate: { role?: (typeof ROLES)[number]; passwordHash?: string; email?: string } = {};
   if (data.role) userUpdate.role = data.role;
+  if (data.email && data.email !== target.email) userUpdate.email = data.email;
   if (data.resetPassword) {
     generatedPassword = generateTempPassword();
     userUpdate.passwordHash = await bcrypt.hash(generatedPassword, 12);

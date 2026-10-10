@@ -378,7 +378,22 @@ export default function MembersAdminPanel({
                     ? `${u.member.firstName} ${u.member.lastName} (${u.member.nickname})`
                     : u.displayName || "—"}
                 </td>
-                <td className="px-4 py-2 whitespace-nowrap">{u.email}</td>
+                <td className="px-4 py-2 whitespace-nowrap">
+                  <input
+                    type="email"
+                    defaultValue={u.email}
+                    disabled={busyId === u.id}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v && v !== u.email) {
+                        handlePatch(u.id, { email: v });
+                      } else {
+                        e.target.value = u.email;
+                      }
+                    }}
+                    className="border border-ink/15 rounded px-2 py-1 text-xs w-44"
+                  />
+                </td>
                 <td className="px-4 py-2">
                   <select
                     value={u.role}
@@ -515,7 +530,9 @@ export default function MembersAdminPanel({
         Le rôle détermine les droits sur le site : INVITE (accès au forum
         uniquement, sans fiche membre), MEMBRE (accès standard), RESPONSABLE
         (peut publier des actus poker), BUREAU (gère aussi les portraits),
-        ADMIN (accès complet, y compris cette page). La suppression d&apos;un
+        ADMIN (accès complet, y compris cette page). L&apos;adresse e-mail est
+        modifiable directement dans le tableau (cliquez, modifiez, puis
+        sortez du champ pour enregistrer). La suppression d&apos;un
         compte est définitive (fiche membre, résultats et messages liés
         compris), utile pour retirer un compte de test. La « Place (site
         historique) » est resynchronisée automatiquement chaque jour depuis
