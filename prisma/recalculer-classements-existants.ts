@@ -124,14 +124,19 @@ async function syncPositionsFromBusts(roundId: string) {
     previousFormatWinner("DEEPSTACK", tournamentDate),
   ]);
 
+  // Jamais appliqué sur un Sit&Go — voir lib/ranking.ts, syncPositionsFromBusts
+  // (corrigé le 17/10/2026, suite à un bonus erroné constaté sur le 1er
+  // Sit&Go de la saison).
   const bonusByMember = new Map<string, number>();
-  for (const b of busts) {
-    if (!b.killerMemberId) continue;
-    let bonus = 0;
-    if (previousMttWinnerId && b.bustedMemberId === previousMttWinnerId) bonus += CHAMPION_BUST_BONUS.MTT;
-    if (previousDeepstackWinnerId && b.bustedMemberId === previousDeepstackWinnerId) bonus += CHAMPION_BUST_BONUS.DEEPSTACK;
-    if (bonus > 0) {
-      bonusByMember.set(b.killerMemberId, (bonusByMember.get(b.killerMemberId) ?? 0) + bonus);
+  if (round.format !== "SITNGO") {
+    for (const b of busts) {
+      if (!b.killerMemberId) continue;
+      let bonus = 0;
+      if (previousMttWinnerId && b.bustedMemberId === previousMttWinnerId) bonus += CHAMPION_BUST_BONUS.MTT;
+      if (previousDeepstackWinnerId && b.bustedMemberId === previousDeepstackWinnerId) bonus += CHAMPION_BUST_BONUS.DEEPSTACK;
+      if (bonus > 0) {
+        bonusByMember.set(b.killerMemberId, (bonusByMember.get(b.killerMemberId) ?? 0) + bonus);
+      }
     }
   }
 
