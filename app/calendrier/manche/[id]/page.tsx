@@ -323,7 +323,11 @@ export default async function CalendrierManchePage(props: { params: Promise<{ id
                 {isDeepstackDay2 && canEnterResults && (
                   <StartingStackInput roundId={round.id} memberId={r.memberId} initialValue={r.startingStack} />
                 )}
-                {canEnterResults && (
+                {/* Day 2 d'un Deepstack groupé : désinscription désactivée —
+                    ces joueurs sont qualifiés depuis le Day 1 (inscription
+                    automatique ou ajout manuel restreint, voir plus haut) ;
+                    les retirer casserait le suivi des qualifiés/stacks. */}
+                {canEnterResults && !isDeepstackDay2 && (
                   <span className="ml-auto">
                     <AdminUnregisterButton roundId={round.id} memberId={r.memberId} />
                   </span>
@@ -349,7 +353,7 @@ export default async function CalendrierManchePage(props: { params: Promise<{ id
                   <span className="text-xs text-sage/70 font-mono-club w-5">{i + 1}</span>
                   <Avatar photoUrl={r.member.photoUrl} name={r.member.nickname} size={32} />
                   <span className="text-sm font-medium">{r.member.nickname}</span>
-                  {canEnterResults && (
+                  {canEnterResults && !isDeepstackDay2 && (
                     <span className="ml-auto">
                       <AdminUnregisterButton roundId={round.id} memberId={r.memberId} />
                     </span>

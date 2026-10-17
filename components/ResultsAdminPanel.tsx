@@ -211,11 +211,9 @@ export default function ResultsAdminPanel({
 
   async function saveBust() {
     if (!selectedRound || !bustBustedId) return;
-    if (!bustKillerId) {
-      setBustError("Le killer est obligatoire.");
-      return;
-    }
-    if (bustKillerId === bustBustedId) {
+    // Le killer est facultatif : laisser le champ vide pour un stack
+    // simplement retiré (pas d'élimination par un autre joueur identifié).
+    if (bustKillerId && bustKillerId === bustBustedId) {
       setBustError("Un joueur ne peut pas s'être killé lui-même.");
       return;
     }
@@ -227,7 +225,7 @@ export default function ResultsAdminPanel({
       body: JSON.stringify({
         roundId: selectedRound.id,
         bustedMemberId: bustBustedId,
-        killerMemberId: bustKillerId,
+        killerMemberId: bustKillerId || null,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -378,8 +376,10 @@ export default function ResultsAdminPanel({
               <div className="mb-10 border border-ink/10 rounded-lg p-5">
                 <h2 className="text-base font-serif font-semibold mb-1">Journal des busts</h2>
                 <p className="text-xs text-sage mb-4">
-                  Pour chaque élimination : le pseudo qui bust et le pseudo
-                  qui l&apos;a killé. Saisissez les busts dans
+                  Pour chaque élimination : le pseudo qui bust, et le pseudo
+                  qui l&apos;a killé — laissez ce dernier champ vide si le
+                  stack a simplement été retiré, sans élimination par un
+                  autre joueur. Saisissez les busts dans
                   l&apos;ordre où ils se produisent. La place et les points
                   se calculent automatiquement à partir de cet ordre et du
                   barème de la saison (le premier bust prend la dernière
@@ -465,7 +465,7 @@ export default function ResultsAdminPanel({
                         onChange={(e) => setBustKillerId(e.target.value)}
                         className="border border-ink/15 rounded px-3 py-2 text-sm bg-white"
                       >
-                        <option value="">Choisir le killer…</option>
+                        <option value="">— Stack retiré (pas de killer) —</option>
                         {bustedMemberOptions.map((m) => (
                           <option key={m.id} value={m.id}>
                             {m.nickname}
@@ -475,7 +475,7 @@ export default function ResultsAdminPanel({
                     </div>
                     <button
                       onClick={saveBust}
-                      disabled={savingBust || !bustBustedId || !bustKillerId}
+                      disabled={savingBust || !bustBustedId}
                       className="text-xs bg-forest text-white rounded px-4 py-2.5 font-medium disabled:opacity-50"
                     >
                       {savingBust ? "…" : "Ajouter le bust"}

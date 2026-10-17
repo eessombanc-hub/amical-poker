@@ -26,18 +26,28 @@ const prisma = new PrismaClient();
  *
  * Ce script est sûr à relancer plusieurs fois : il ne fait que redériver
  * position/points/bonusPoints/kills à partir du journal de busts (source de
- * vérité), jamais d'ajout ni de duplication de points.
+ * vérité), jamais d'ajout ni de duplication de points. Sert aussi à
+ * répercuter toute correction du barème (RankingConfig.pointsTable, voir
+ * prisma/ajouter-bareme-sitngo.ts) sur les manches déjà jouées.
  *
  * Logique dupliquée de lib/ranking.ts (comme les autres scripts prisma/*.ts
  * à usage unique, qui n'importent pas le code de l'app pour rester
  * indépendants des alias de chemin "@/") — à tenir à jour avec ce fichier si
  * la formule de points ou de bonus change à nouveau.
  *
+ * IMPORTANT (corrigé le 17/10/2026) : le Sit&Go (RoundFormat.SITNGO) a son
+ * propre classement parallèle (table SitngoRanking, voir
+ * lib/ranking.ts/recalculateSitngoRanking) — ses Result doivent être
+ * exclus du classement général (Ranking) et agrégés séparément. Une version
+ * antérieure de ce script, écrite avant l'introduction du Sit&Go, mélangeait
+ * les deux : la fonction recalculateRanking ci-dessous a été corrigée pour
+ * exclure SITNGO, et recalculateSitngoRanking a été ajoutée.
+ *
  * Usage : npx tsx prisma/recalculer-classements-existants.ts
  */
 
 // ─────────────────────────────────────────────────────────────────────────
-// Logique de classement (copie de lib/ranking.ts, version au 19/09/2026)
+// Logique de classement (copie de lib/ranking.ts, version au 17/10/2026)
 // ─────────────────────────────────────────────────────────────────────────
 
 type GroupInfo = { roundIds: string[]; canonicalId: string };
@@ -186,7 +196,15 @@ async function syncKillsFromBusts(roundId: string) {
 
 async function recalculateRanking(seasonId: string) {
   const config = await prisma.rankingConfig.findUnique({ where: { seasonId } });
-  const results = await prisma.result.findMany({ where: { round: { seasonId } }, include: { round: true } });
+
+  // Le Sit&Go a son propre classement parallèle (recalculateSitngoRanking
+  // ci-dessous) : ses Result sont exclus d'ici pour ne jamais se mélanger
+  // au classement général MTT/Deepstack — voir lib/ranking.ts,
+  // recalculateRanking.
+  const results = await prisma.result.findMany({
+    where: { round: { seasonId, format: { not: "SITNGO" } } },
+    include: { round: true },
+  });
 
   const byMember = new Map<string, typeof results>();
   for (const r of results) {
@@ -212,6 +230,65 @@ async function recalculateRanking(seasonId: string) {
     );
 
     await prisma.ranking.upsert({
+      where: { seasonId_memberId: { seasonId, memberId } },
+      update: {
+        totalPoints,
+        participations,
+        wins,
+        podiums,
+        totalKills,
+        totalBonusPoints,
+        bestResult: best ? `${best}${best === 1 ? "er" : "e"}` : null,
+      },
+      create: {
+        seasonId,
+        memberId,
+        totalPoints,
+        participations,
+        wins,
+        podiums,
+        totalKills,
+        totalBonusPoints,
+        bestResult: best ? `${best}${best === 1 ? "er" : "e"}` : null,
+      },
+    });
+  }
+}
+
+// Classement parallèle dédié au Sit&Go (table SitngoRanking) — même logique
+// que recalculateRanking ci-dessus, mais à partir des seuls Result de
+// format SITNGO. Voir lib/ranking.ts, recalculateSitngoRanking.
+async function recalculateSitngoRanking(seasonId: string) {
+  const config = await prisma.rankingConfig.findUnique({ where: { seasonId } });
+  const results = await prisma.result.findMany({
+    where: { round: { seasonId, format: "SITNGO" } },
+    include: { round: true },
+  });
+
+  const byMember = new Map<string, typeof results>();
+  for (const r of results) {
+    const list = byMember.get(r.memberId) ?? [];
+    list.push(r);
+    byMember.set(r.memberId, list);
+  }
+  const nbRoundsCounted = config?.nbRoundsCounted ?? null;
+
+  for (const [memberId, memberResults] of byMember) {
+    const sorted = [...memberResults].sort((a, b) => b.points - a.points);
+    const counted = nbRoundsCounted ? sorted.slice(0, nbRoundsCounted) : sorted;
+
+    const totalPoints = counted.reduce((sum, r) => sum + r.points, 0);
+    const participations = memberResults.length;
+    const wins = memberResults.filter((r) => r.position === 1).length;
+    const podiums = memberResults.filter((r) => r.position <= 3).length;
+    const totalKills = memberResults.reduce((sum, r) => sum + r.kills, 0);
+    const totalBonusPoints = memberResults.reduce((sum, r) => sum + r.bonusPoints, 0);
+    const best = memberResults.reduce(
+      (best, r) => (best === null || r.position < best ? r.position : best),
+      null as number | null
+    );
+
+    await prisma.sitngoRanking.upsert({
       where: { seasonId_memberId: { seasonId, memberId } },
       update: {
         totalPoints,
@@ -267,10 +344,11 @@ async function main() {
 
   for (const seasonId of touchedSeasonIds) {
     await recalculateRanking(seasonId);
+    await recalculateSitngoRanking(seasonId);
   }
-  console.log(`✅ Classement (Ranking) recalculé pour ${touchedSeasonIds.size} saison(s).`);
+  console.log(`✅ Classement général (Ranking) et classement Sit&Go (SitngoRanking) recalculés pour ${touchedSeasonIds.size} saison(s).`);
 
-  console.log("\n🎉 Script terminé — le bonus « chasseur de champion » est désormais à jour partout.");
+  console.log("\n🎉 Script terminé — barème à jour, bonus « chasseur de champion » et classements Sit&Go/général synchronisés partout.");
 }
 
 main()

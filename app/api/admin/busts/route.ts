@@ -15,9 +15,13 @@ const bustSchema = z
   .object({
     roundId: z.string(),
     bustedMemberId: z.string(),
-    killerMemberId: z.string().min(1, "Le killer est obligatoire."),
+    // Le killer est facultatif : un stack retiré sans avoir été éliminé par
+    // un autre joueur identifié (ex. élimination par les blindes, joueur
+    // parti) se saisit en laissant ce champ vide — voir
+    // prisma/schema.prisma, RoundBust.killerMemberId (nullable).
+    killerMemberId: z.string().nullable().optional(),
   })
-  .refine((d) => d.killerMemberId !== d.bustedMemberId, {
+  .refine((d) => !d.killerMemberId || d.killerMemberId !== d.bustedMemberId, {
     message: "Un joueur ne peut pas s'être killé lui-même.",
     path: ["killerMemberId"],
   });
@@ -55,10 +59,12 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/admin/busts — saisie (ou correction) d'un bust : le pseudo qui
-// bust et le pseudo qui l'a killé, tous deux obligatoires. La place n'est pas saisie —
-// elle est déduite automatiquement de l'ordre des busts déjà enregistrés
-// pour la manche (voir lib/ranking.ts, syncPositionsFromBusts), tout comme
-// le décompte des kills (syncKillsFromBusts).
+// bust est obligatoire, le pseudo qui l'a killé est facultatif (laisser le
+// champ vide quand le stack est simplement retiré, sans élimination par un
+// autre joueur). La place n'est pas saisie — elle est déduite
+// automatiquement de l'ordre des busts déjà enregistrés pour la manche (voir
+// lib/ranking.ts, syncPositionsFromBusts), tout comme le décompte des kills
+// (syncKillsFromBusts, qui ignore les busts sans killer).
 export async function POST(req: NextRequest) {
   const session = await getServerSession(authOptions);
   const authError = requireResponsable(session);
@@ -70,7 +76,8 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues[0]?.message || "Requête invalide." }, { status: 400 });
   }
-  const { roundId, bustedMemberId, killerMemberId } = parsed.data;
+  const { roundId, bustedMemberId } = parsed.data;
+  const killerMemberId = parsed.data.killerMemberId || null;
 
   const round = await prisma.round.findUnique({ where: { id: roundId } });
   if (!round) {

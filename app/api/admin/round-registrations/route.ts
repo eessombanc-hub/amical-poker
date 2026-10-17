@@ -173,6 +173,30 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "Cette manche ne peut plus être modifiée." }, { status: 400 });
   }
 
+  // Day 2 d'un Deepstack groupé (voir Round.groupId) : désinscription
+  // interdite, même pour le bureau/responsable/admin — ces joueurs sont
+  // qualifiés depuis le Day 1 (voir isQualifiedForDeepstackDay2 ci-dessus et
+  // app/calendrier/manche/[id]/page.tsx, qui masque déjà le bouton
+  // correspondant côté client). Sans effet pour le Day 1 (ou toute manche
+  // non groupée) : la désinscription y reste possible normalement.
+  if (round.format === "DEEPSTACK" && round.groupId) {
+    const siblings = await prisma.round.findMany({
+      where: { groupId: round.groupId },
+      select: { id: true, date: true },
+      orderBy: { date: "asc" },
+    });
+    const isDeepstackDay2 = siblings.length > 0 && siblings[0].id !== round.id;
+    if (isDeepstackDay2) {
+      return NextResponse.json(
+        {
+          error:
+            "Impossible de désinscrire un joueur du Day 2 d'un Deepstack : la désinscription n'est autorisée que sur le Day 1.",
+        },
+        { status: 403 }
+      );
+    }
+  }
+
   const existing = await prisma.roundRegistration.findUnique({
     where: { roundId_memberId: { roundId, memberId } },
   });

@@ -249,13 +249,22 @@ export default async function ClassementPage() {
                 </a>
               )}
             </div>
-            <a
-              href="/documents/bareme-points-apcv.xlsx"
-              download
-              className="inline-flex items-center gap-1.5 text-brass-light text-xs font-medium underline underline-offset-2"
-            >
-              📄 Barème des points (MTT / Deepstack) — fichier Excel
-            </a>
+            <div className="flex flex-col gap-1.5">
+              <a
+                href="/documents/bareme-points-apcv.xlsx"
+                download
+                className="inline-flex items-center gap-1.5 text-brass-light text-xs font-medium underline underline-offset-2"
+              >
+                📄 Barème des points (MTT / Deepstack) — fichier Excel
+              </a>
+              <a
+                href="/documents/bareme-sitngo-apcv.pdf"
+                download
+                className="inline-flex items-center gap-1.5 text-brass-light text-xs font-medium underline underline-offset-2"
+              >
+                📄 Barème des points (Sit&amp;Go) — fichier PDF
+              </a>
+            </div>
           </div>
 
           <section id="classement" className="scroll-mt-24 mb-14">
