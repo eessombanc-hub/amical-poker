@@ -322,10 +322,14 @@ export async function syncKillsFromBusts(roundId: string) {
 
 // Bonus "chasseur de champion" : sortir le vainqueur de la manche précédente
 // d'un format donné rapporte des points supplémentaires, en plus des points
-// de place habituels — voir syncPositionsFromBusts.
+// de place habituels — voir syncPositionsFromBusts. SITNGO a sa propre
+// version (previousSitngoWinner ci-dessous), restreinte à la saison en
+// cours — à la différence de MTT/DEEPSTACK, qui transmettent le titre d'une
+// saison à l'autre.
 const CHAMPION_BUST_BONUS: Record<string, number> = {
   MTT: 5,
   DEEPSTACK: 10,
+  SITNGO: 5,
 };
 
 /**
@@ -335,11 +339,30 @@ const CHAMPION_BUST_BONUS: Record<string, number> = {
  * confondus : le titre de champion en titre se transmet d'une manche à
  * l'autre indépendamment des frontières de saison. Les manches groupées
  * (Day 1/Day 2) ne portent leur Result que sur la manche canonique — déjà
- * naturellement les seules trouvées ici.
+ * naturellement les seules trouvées ici. Non utilisée pour SITNGO, qui a sa
+ * propre version ci-dessous (previousSitngoWinner).
  */
 async function previousFormatWinner(format: RoundFormat, beforeDate: Date): Promise<string | null> {
   const winner = await prisma.result.findFirst({
     where: { position: 1, round: { format, date: { lt: beforeDate } } },
+    orderBy: { round: { date: "desc" } },
+    select: { memberId: true },
+  });
+  return winner?.memberId ?? null;
+}
+
+/**
+ * Équivalent de previousFormatWinner, mais pour le Sit&Go — et restreint à
+ * la saison indiquée (seasonId), contrairement à previousFormatWinner qui
+ * cherche tous formats de saison confondus. Choix volontaire : le titre de
+ * champion Sit&Go en titre ne se transmet PAS d'une saison à l'autre,
+ * uniquement entre Sit&Go de la même saison. Retourne null pour le premier
+ * Sit&Go d'une saison (aucun champion Sit&Go encore désigné cette
+ * saison-là) : personne ne touche alors ce bonus sur cette manche.
+ */
+async function previousSitngoWinner(seasonId: string, beforeDate: Date): Promise<string | null> {
+  const winner = await prisma.result.findFirst({
+    where: { position: 1, round: { format: "SITNGO", seasonId, date: { lt: beforeDate } } },
     orderBy: { round: { date: "desc" } },
     select: { memberId: true },
   });
@@ -365,6 +388,13 @@ async function previousFormatWinner(format: RoundFormat, beforeDate: Date): Prom
  * si la même personne détenait les deux titres). Ce bonus s'ajoute aux
  * points du BUSTEUR, pas du busté — que le busteur termine ensuite éliminé
  * lui-même ou vainqueur de la manche.
+ *
+ * Le Sit&Go a sa propre variante de ce bonus, +5 pour qui élimine le
+ * vainqueur du Sit&Go précédent — mais UNIQUEMENT parmi les Sit&Go de la
+ * même saison (voir previousSitngoWinner) : contrairement au titre MTT/
+ * Deepstack, le titre Sit&Go ne se transmet pas d'une saison à l'autre. Les
+ * deux bonus ne se cumulent jamais : une manche SITNGO n'est jamais éligible
+ * au bonus MTT/Deepstack (classement général), et vice versa.
  *
  * Tous les Result du groupe sont écrits UNIQUEMENT sur la manche canonique
  * (la plus récente) : si une manche non canonique du groupe portait déjà des
@@ -406,11 +436,14 @@ export async function syncPositionsFromBusts(roundId: string) {
   if (n === 0) return;
 
   // Champions en titre à la date de cette manche (avant elle) — voir
-  // CHAMPION_BUST_BONUS ci-dessus.
+  // CHAMPION_BUST_BONUS ci-dessus. Sit&Go et MTT/Deepstack ne se recoupent
+  // jamais (une manche n'a qu'un format) : on ne calcule que ce dont ce
+  // format a besoin.
   const tournamentDate = canonicalRound?.date ?? new Date();
-  const [previousMttWinnerId, previousDeepstackWinnerId] = await Promise.all([
-    previousFormatWinner("MTT", tournamentDate),
-    previousFormatWinner("DEEPSTACK", tournamentDate),
+  const [previousMttWinnerId, previousDeepstackWinnerId, previousSitngoWinnerId] = await Promise.all([
+    round.format !== "SITNGO" ? previousFormatWinner("MTT", tournamentDate) : Promise.resolve(null),
+    round.format !== "SITNGO" ? previousFormatWinner("DEEPSTACK", tournamentDate) : Promise.resolve(null),
+    round.format === "SITNGO" ? previousSitngoWinner(round.seasonId, tournamentDate) : Promise.resolve(null),
   ]);
 
   // Bonus par busteur (killerMemberId), cumulé sur tous les busts de la
@@ -419,14 +452,21 @@ export async function syncPositionsFromBusts(roundId: string) {
   // plus bas (que ce soit dans la boucle des éliminés ou dans la branche du
   // vainqueur).
   //
-  // Jamais appliqué sur un Sit&Go (RoundFormat.SITNGO) : le titre de
-  // champion MTT/Deepstack est une notion propre au classement général, qui
-  // reste entièrement séparé du classement Sit&Go (voir recalculateRanking/
-  // recalculateSitngoRanking plus haut) — y mélanger un bonus MTT/Deepstack
-  // n'a pas de sens (corrigé le 17/10/2026, suite à un bonus erroné constaté
-  // sur le 1er Sit&Go de la saison).
+  // Sit&Go (RoundFormat.SITNGO) utilise sa propre variante du bonus (voir
+  // previousSitngoWinner et le commentaire de fonction ci-dessus) — jamais
+  // le bonus MTT/Deepstack, qui est une notion propre au classement général,
+  // entièrement séparé du classement Sit&Go (corrigé le 17/10/2026, suite à
+  // un bonus MTT/Deepstack erroné constaté sur le 1er Sit&Go de la saison ;
+  // le bonus Sit&Go dédié a été ajouté dans la foulée).
   const bonusByMember = new Map<string, number>();
-  if (round.format !== "SITNGO") {
+  if (round.format === "SITNGO") {
+    for (const b of busts) {
+      if (!b.killerMemberId) continue;
+      if (previousSitngoWinnerId && b.bustedMemberId === previousSitngoWinnerId) {
+        bonusByMember.set(b.killerMemberId, (bonusByMember.get(b.killerMemberId) ?? 0) + CHAMPION_BUST_BONUS.SITNGO);
+      }
+    }
+  } else {
     for (const b of busts) {
       if (!b.killerMemberId) continue;
       let bonus = 0;

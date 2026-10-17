@@ -79,11 +79,24 @@ function pointsForPosition(
 const CHAMPION_BUST_BONUS: Record<string, number> = {
   MTT: 5,
   DEEPSTACK: 10,
+  SITNGO: 5,
 };
 
 async function previousFormatWinner(format: RoundFormat, beforeDate: Date): Promise<string | null> {
   const winner = await prisma.result.findFirst({
     where: { position: 1, round: { format, date: { lt: beforeDate } } },
+    orderBy: { round: { date: "desc" } },
+    select: { memberId: true },
+  });
+  return winner?.memberId ?? null;
+}
+
+// Équivalent pour le Sit&Go, mais restreint à la saison indiquée — voir
+// lib/ranking.ts, previousSitngoWinner : le titre Sit&Go ne se transmet pas
+// d'une saison à l'autre, contrairement au titre MTT/Deepstack.
+async function previousSitngoWinner(seasonId: string, beforeDate: Date): Promise<string | null> {
+  const winner = await prisma.result.findFirst({
+    where: { position: 1, round: { format: "SITNGO", seasonId, date: { lt: beforeDate } } },
     orderBy: { round: { date: "desc" } },
     select: { memberId: true },
   });
@@ -119,16 +132,27 @@ async function syncPositionsFromBusts(roundId: string) {
   if (n === 0) return;
 
   const tournamentDate = canonicalRound?.date ?? new Date();
-  const [previousMttWinnerId, previousDeepstackWinnerId] = await Promise.all([
-    previousFormatWinner("MTT", tournamentDate),
-    previousFormatWinner("DEEPSTACK", tournamentDate),
+  const [previousMttWinnerId, previousDeepstackWinnerId, previousSitngoWinnerId] = await Promise.all([
+    round.format !== "SITNGO" ? previousFormatWinner("MTT", tournamentDate) : Promise.resolve(null),
+    round.format !== "SITNGO" ? previousFormatWinner("DEEPSTACK", tournamentDate) : Promise.resolve(null),
+    round.format === "SITNGO" ? previousSitngoWinner(round.seasonId, tournamentDate) : Promise.resolve(null),
   ]);
 
-  // Jamais appliqué sur un Sit&Go — voir lib/ranking.ts, syncPositionsFromBusts
-  // (corrigé le 17/10/2026, suite à un bonus erroné constaté sur le 1er
-  // Sit&Go de la saison).
+  // Sit&Go a sa propre variante du bonus (previousSitngoWinner, restreinte à
+  // la saison en cours) — jamais le bonus MTT/Deepstack, propre au
+  // classement général — voir lib/ranking.ts, syncPositionsFromBusts
+  // (corrigé le 17/10/2026, suite à un bonus MTT/Deepstack erroné constaté
+  // sur le 1er Sit&Go de la saison ; bonus Sit&Go dédié ajouté dans la
+  // foulée).
   const bonusByMember = new Map<string, number>();
-  if (round.format !== "SITNGO") {
+  if (round.format === "SITNGO") {
+    for (const b of busts) {
+      if (!b.killerMemberId) continue;
+      if (previousSitngoWinnerId && b.bustedMemberId === previousSitngoWinnerId) {
+        bonusByMember.set(b.killerMemberId, (bonusByMember.get(b.killerMemberId) ?? 0) + CHAMPION_BUST_BONUS.SITNGO);
+      }
+    }
+  } else {
     for (const b of busts) {
       if (!b.killerMemberId) continue;
       let bonus = 0;
