@@ -6,10 +6,15 @@ import BirthdayPopup from "@/components/BirthdayPopup";
 import MemberLoginCard from "@/components/MemberLoginCard";
 import NewsTicker, { type TickerItem } from "@/components/NewsTicker";
 import HelperMascot from "@/components/HelperMascot";
-import { authOptions } from "@/lib/auth";
+import FeteParticles from "@/components/home/FeteParticles";
+import FeteDayRollover from "@/components/home/FeteDayRollover";
+import FetePreviewBar from "@/components/home/FetePreviewBar";
+import { authOptions, hasRole } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { jsonLdScriptProps, roundEventJsonLd } from "@/lib/seo";
 import { LEVEL_LABEL, levelStyles } from "@/lib/strategieLevels";
+import { resolveFeteForDate } from "@/lib/fetes/calendar";
+import { getFeteTheme } from "@/lib/fetes/themes";
 
 export const dynamic = "force-dynamic";
 
@@ -304,7 +309,8 @@ async function getMyRanking(memberId: string | undefined, seasonId: string | und
   }
 }
 
-export default async function HomePage() {
+export default async function HomePage(props: { searchParams: Promise<{ previewDate?: string }> }) {
+  const searchParams = await props.searchParams;
   const [round, news, { season, topRankings, lastRound }, portraits, birthdays, stats, strategie, recentLogins, currentMember] =
     await Promise.all([
       getNextRound(),
@@ -319,6 +325,34 @@ export default async function HomePage() {
     ]);
   const myNextRoundStatus = await getMyNextRoundStatus(currentMember?.id, round?.id);
   const myRanking = await getMyRanking(currentMember?.id, season?.id);
+
+  // ── Page d'accueil événementielle : fête du jour ────────────────────
+  // Réservé au bureau/responsables/admin, un mode de prévisualisation (voir
+  // components/home/FetePreviewBar.tsx) permet de forcer une date fictive
+  // via ?previewDate=AAAA-MM-JJ, pour tester une ambiance sans attendre la
+  // bonne date ni toucher à l'horloge du système. Ignoré pour qui n'a pas ce
+  // rôle : la page affiche alors toujours la vraie date du jour, quel que
+  // soit le paramètre d'URL (voir aussi lib/fetes/calendar.ts,
+  // resolveFeteForDate pour la détermination de la fête elle-même, et
+  // lib/fetes/themes.ts pour l'habillage visuel qui en découle).
+  const session = await getServerSession(authOptions);
+  const role = (session?.user as any)?.role as string | undefined;
+  const canPreviewFetes = hasRole(role, "RESPONSABLE");
+  const requestedPreviewDate = canPreviewFetes ? searchParams.previewDate : undefined;
+  let previewDate: Date | null = null;
+  if (requestedPreviewDate) {
+    const parsed = new Date(`${requestedPreviewDate}T12:00:00Z`);
+    if (!Number.isNaN(parsed.getTime())) previewDate = parsed;
+  }
+  const feteReferenceDate = previewDate ?? new Date();
+  const fete = resolveFeteForDate(feteReferenceDate);
+  const feteTheme = getFeteTheme(fete);
+  const feteDateLabel = feteReferenceDate.toLocaleDateString("fr-FR", {
+    timeZone: "Europe/Paris",
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
   // Manche CFEPA (Championnat de France par Équipe de Poker Associatif) :
   // inscriptions réservées à l'Équipe CFEPA (voir Member.cfepaTeam) — si la
   // prochaine manche du club en est une, le bouton "S'inscrire" du hero et
@@ -372,23 +406,42 @@ export default async function HomePage() {
         />
       )}
       <BirthdayPopup birthdays={birthdays.map((m) => ({ name: m.nickname, photoUrl: m.photoUrl }))} />
+      <FeteDayRollover />
       {/* ── BANDEAU ACTUS "EN DIRECT" (repris de la Gazette Poker) ───── */}
       <NewsTicker items={tickerItems} />
-      {/* ── HERO ────────────────────────────────── */}
-      <section className="relative overflow-hidden flex items-center justify-center px-7 py-10 min-h-[calc(100vh-136px)] lg:min-h-[calc(100vh-166px)] bg-[linear-gradient(155deg,#04140c_0%,#063d27_25%,#050505_50%,#2a0008_75%,#7a0012_100%)]">
+      {/* ── HERO ÉVÉNEMENTIEL : habillage (dégradé, halos, particules) et
+          message dépendent de la fête du jour — voir lib/fetes/themes.ts.
+          Structure et identité de marque (logo, titre, signature, CTAs)
+          inchangées quel que soit le thème. ───────────────────────── */}
+      <section
+        className="relative overflow-hidden flex items-center justify-center px-7 py-10 min-h-[calc(100vh-136px)] lg:min-h-[calc(100vh-166px)]"
+        style={{ background: feteTheme.backgroundGradient }}
+      >
+        {canPreviewFetes && <FetePreviewBar initialDate={requestedPreviewDate ?? null} />}
         <div
           aria-hidden
           className="pointer-events-none absolute -top-32 left-1/2 -translate-x-1/2 w-[720px] h-[720px] rounded-full opacity-50 blur-3xl animate-glow-pulse"
-          style={{ background: "radial-gradient(circle, rgba(10,222,124,0.45) 0%, transparent 70%)" }}
+          style={{ background: feteTheme.glowPrimary }}
         />
         <div
           aria-hidden
           className="pointer-events-none absolute bottom-0 right-0 w-[520px] h-[520px] rounded-full opacity-40 blur-3xl"
-          style={{ background: "radial-gradient(circle, rgba(255,31,61,0.35) 0%, transparent 70%)" }}
+          style={{ background: feteTheme.glowSecondary }}
         />
-        <div className="relative max-w-4xl mx-auto flex flex-col items-center text-center gap-4">
+        <FeteParticles recipe={feteTheme.particles} />
+        <div className="relative z-10 max-w-4xl mx-auto flex flex-col items-center text-center gap-4">
           <div className="animate-fade-in-up">
             <Logo size={100} animated halo />
+          </div>
+          <div className="w-full animate-fade-in-up [animation-delay:60ms] flex items-center justify-center gap-2 text-[0.7rem] md:text-xs uppercase tracking-[0.2em] text-white/60">
+            <span className="capitalize">{feteDateLabel}</span>
+            <span aria-hidden className="text-white/25">
+              •
+            </span>
+            <span>
+              {feteTheme.emoji ? `${feteTheme.emoji} ` : ""}
+              {feteTheme.label}
+            </span>
           </div>
           <div className="w-full animate-fade-in-up [animation-delay:120ms]">
             <h1 className="font-titre-club text-royal-shine animate-royal-shine text-4xl md:text-6xl leading-[1.15] drop-shadow-[0_4px_18px_rgba(0,0,0,0.6)]">
@@ -397,7 +450,10 @@ export default async function HomePage() {
             <p className="font-signature text-royal-shine animate-royal-shine text-2xl md:text-3xl leading-[1.5] mt-3 md:mt-3 pb-2 drop-shadow-[0_2px_10px_rgba(0,0,0,0.5)]">
               Le poker se joue en bonne compagnie
             </p>
-            <p className="text-white/75 text-sm md:text-base mt-4 max-w-xl mx-auto">
+            <p className="text-brass-light text-sm md:text-base font-medium mt-4 max-w-xl mx-auto drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
+              {feteTheme.heroMessage}
+            </p>
+            <p className="text-white/75 text-sm md:text-base mt-3 max-w-xl mx-auto">
               Une saison, des manches, un classement et surtout une bande de
               passionnés qui aiment se retrouver autour d&apos;un tapis vert.
               Rejoignez le club et suivez toute l&apos;actualité poker.
